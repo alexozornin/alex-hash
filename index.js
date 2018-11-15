@@ -2,159 +2,177 @@
 
 const crypto = require('crypto');
 
-module.exports.get = (input, local) =>
-{
+module.exports.createRandomLocal = () => {
+    let md5 = crypto.createHash('md5');
+    md5.update(Math.random().toString());
+    return md5.digest('hex');
+}
+
+module.exports.createSalt = (input) => {
+    let salt = '';
     let data = JSON.stringify(input);
     let blocks = Math.ceil(data.length / 2);
-    let salt_length = Math.floor((Math.random() * (blocks + 1)) + blocks);
-    let doubles = salt_length - blocks;
-    let salt = [];
-    let primary_input = [];
-    for (let i = 0; i < blocks; i++)
-    {
-        let A256 = Math.floor(Math.random() * 256);
-        salt.push(A256.toString(16));
-        if (i < doubles)
-        {
-            let B256 = Math.floor(Math.random() * 256);
-            salt.push(B256.toString(16));
-            if (data.length >= 2 * i + 2)
-            {
-                primary_input.push(mix(data[2 * i] + data[2 * i + 1], A256, B256));
-            }
-            else
-            {
-                primary_input.push(mix(data[2 * i], A256, B256));
-            }
+    let saltLength = Math.floor((Math.random() * (blocks + 1)) + blocks);
+    for (let i = 0; i < saltLength; i++) {
+        let hex = Math.floor(Math.random() * 256).toString(16);
+        if (hex.length < 2) {
+            hex = '0' + hex;
         }
-        else
-        {
-            if (data.length >= 2 * i + 2)
-            {
-                primary_input.push(mix(data[2 * i] + data[2 * i + 1], A256));
-            }
-            else
-            {
-                primary_input.push(mix(data[2 * i], A256));
-            }
-        }
+        salt += hex;
     }
-    let primary = crypto.createHmac('sha256', local.toString(16));
-    primary.update(data);
-    let secondary = crypto.createHmac('sha224', salt);
-    secondary.update(primary.digest('hex'));
-    return { salt: salt, hash: secondary.digest('hex') };
+    return salt;
 }
 
-module.exports.check = (input, local, salt) =>
-{
+module.exports.createHash = (input, salt, local) => {
     let data = JSON.stringify(input);
-    let primary = crypto.createHmac('sha256', local.toString(16));
-    primary.update(data);
-    let secondary = crypto.createHmac('sha224', salt);
+    let blocks = Math.ceil(data.length / 2);
+    let saltLength = salt.length;
+    let doubles = saltLength / 2 - blocks;
+    let primaryInput = '';
+    let saltIndex = 0;
+    for (let i = 0; i < blocks; i++) {
+        let block = '' + data[2 * i];
+        if (data.length >= 2 * i + 2) {
+            block += data[2 * i + 1]
+        }
+        let saltDiv = div(parseInt('' + salt[saltIndex] + salt[saltIndex + 1], 16), 4);
+        saltIndex += 2;
+        block += symbols[saltDiv.res];
+        let offset = parseInt(local[i % local.length], 16) + saltDiv.rem;
+        if (i < doubles) {
+            saltDiv = div(parseInt('' + salt[saltIndex] + salt[saltIndex + 1], 16), 4);
+            saltIndex += 2;
+            block += symbols[saltDiv.res];
+            offset += saltDiv.rem * 4;
+        }
+        offset = offset % mixLimit[block.length];
+
+        primaryInput += mix[block.length][offset](block);
+    }
+    let primary = crypto.createHash('sha256');
+    primary.update(primaryInput);
+    let secondary = crypto.createHmac('sha256', ('' + local).substr(16));
     secondary.update(primary.digest('hex'));
-    return { hash: secondary.digest('hex') };
+    return secondary.digest('hex');
 }
 
-function div(numerator, denominator)
-{
+module.exports.check = (input, salt, local, hash) => {
+    return hash == module.exports.createHash(input, salt, local);
+}
+
+function div(numerator, denominator) {
     let remainder = numerator % denominator;
     return { rem: remainder, res: (numerator - remainder) / denominator };
 }
 
-function mix(initial, A256, B256)
-{
-    if (B256 == undefined || B256 == null)
-    {
-        if (initial.length == 1)
-        {
-            let divA = div(A256, 4);
-            switch (divA.rem % 2)
-            {
-                case 0:
-                    return initial[0] + symbols[divA.res];
-                default:
-                    return symbols[divA.res] + initial[0];
-            }
+const mixLimit = {
+    2: 2,
+    3: 6,
+    4: 24
+}
+
+const mix = {
+    2: {
+        0: (input) => {
+            return "" + input[0] + input[1];
+        },
+        1: (input) => {
+            return "" + input[1] + input[0];
         }
-        else
-        {
-            let divA = div(A256, 4);
-            switch (divA.rem)
-            {
-                case 0:
-                    return initial[0] + symbols[divA.res] + initial[1];
-                case 1:
-                    return initial[1] + initial[0] + symbols[divA.res];
-                case 2:
-                    return initial[1] + symbols[divA.res] + initial[0];
-                default:
-                    return symbols[divA.res] + initial[1] + initial[0];
-            }
+    },
+    3: {
+        0: (input) => {
+            return "" + input[0] + input[1] + input[2];
+        },
+        1: (input) => {
+            return "" + input[0] + input[2] + input[1];
+        },
+        2: (input) => {
+            return "" + input[1] + input[0] + input[2];
+        },
+        3: (input) => {
+            return "" + input[1] + input[2] + input[0];
+        },
+        4: (input) => {
+            return "" + input[2] + input[0] + input[1];
+        },
+        5: (input) => {
+            return "" + input[2] + input[1] + input[0];
         }
-    }
-    else
-    {
-        if (initial.length == 1)
-        {
-            let divA = div(A256, 4);
-            let divB = div(B256, 4);
-            switch ((divA.rem * 4 + divB.rem) % 6)
-            {
-                case 0:
-                    return symbols[divB.res] + initial[0] + symbols[divA.res];
-                case 1:
-                    return symbols[divA.res] + initial[0] + symbols[divB.res];
-                case 2:
-                    return initial[0] + symbols[divB.res] + symbols[divA.res];
-                case 3:
-                    return symbols[divB.res] + symbols[divA.res] + initial[0];
-                case 4:
-                    return initial[0] + symbols[divA.res] + symbols[divB.res];
-                default:
-                    return symbols[divA.res] + symbols[divB.res] + initial[0];
-            }
-        }
-        else
-        {
-            let divA = div(A256, 4);
-            let divB = div(B256, 4);
-            switch (divA.rem * 4 + divB)
-            {
-                case 0:
-                    return initial[0] + symbols[divA.res] + initial[1] + symbols[divB.res];
-                case 1:
-                    return symbols[divA.res] + initial[0] + symbols[divB.res] + initial[1];
-                case 2:
-                    return symbols[divA.res] + initial[0] + initial[1] + symbols[divB.res];
-                case 3:
-                    return initial[0] + symbols[divA.res] + symbols[divB.res] + initial[1];
-                case 4:
-                    return initial[1] + symbols[divA.res] + initial[0] + symbols[divB.res];
-                case 5:
-                    return symbols[divA.res] + initial[1] + symbols[divB.res] + initial[0];
-                case 6:
-                    return symbols[divA.res] + initial[1] + initial[0] + symbols[divB.res];
-                case 7:
-                    return initial[1] + symbols[divA.res] + symbols[divB.res] + initial[0];
-                case 8:
-                    return initial[0] + symbols[divB.res] + initial[1] + symbols[divA.res];
-                case 9:
-                    return symbols[divB.res] + initial[0] + symbols[divA.res] + initial[1];
-                case 10:
-                    return symbols[divB.res] + initial[0] + initial[1] + symbols[divA.res];
-                case 11:
-                    return initial[0] + symbols[divB.res] + symbols[divA.res] + initial[1];
-                case 12:
-                    return initial[1] + symbols[divB.res] + initial[0] + symbols[divA.res];
-                case 13:
-                    return symbols[divB.res] + initial[1] + symbols[divA.res] + initial[0];
-                case 14:
-                    return symbols[divB.res] + initial[1] + initial[0] + symbols[divA.res];
-                case 15:
-                    return initial[1] + symbols[divB.res] + symbols[divA.res] + initial[0];
-            }
-        }
+    },
+    4: {
+        0: (input) => {
+            return "" + input[0] + input[1] + input[2] + input[3];
+        },
+        1: (input) => {
+            return "" + input[0] + input[1] + input[3] + input[2];
+        },
+        2: (input) => {
+            return "" + input[0] + input[2] + input[1] + input[3];
+        },
+        3: (input) => {
+            return "" + input[0] + input[2] + input[3] + input[1];
+        },
+        4: (input) => {
+            return "" + input[0] + input[3] + input[1] + input[2];
+        },
+        5: (input) => {
+            return "" + input[0] + input[3] + input[2] + input[1];
+        },
+        6: (input) => {
+            return "" + input[1] + input[0] + input[2] + input[3];
+        },
+        7: (input) => {
+            return "" + input[1] + input[0] + input[3] + input[2];
+        },
+        8: (input) => {
+            return "" + input[1] + input[2] + input[0] + input[3];
+        },
+        9: (input) => {
+            return "" + input[1] + input[2] + input[3] + input[0];
+        },
+        10: (input) => {
+            return "" + input[1] + input[3] + input[0] + input[2];
+        },
+        11: (input) => {
+            return "" + input[1] + input[3] + input[2] + input[0];
+        },
+        12: (input) => {
+            return "" + input[2] + input[0] + input[1] + input[3];
+        },
+        13: (input) => {
+            return "" + input[2] + input[0] + input[3] + input[1];
+        },
+        14: (input) => {
+            return "" + input[2] + input[1] + input[0] + input[3];
+        },
+        15: (input) => {
+            return "" + input[2] + input[1] + input[3] + input[0];
+        },
+        16: (input) => {
+            return "" + input[2] + input[3] + input[0] + input[1];
+        },
+        17: (input) => {
+            return "" + input[2] + input[3] + input[1] + input[0];
+        },
+        18: (input) => {
+            return "" + input[3] + input[0] + input[1] + input[2];
+        },
+        19: (input) => {
+            return "" + input[3] + input[0] + input[2] + input[1];
+        },
+        20: (input) => {
+            return "" + input[3] + input[1] + input[0] + input[2];
+        },
+        21: (input) => {
+            return "" + input[3] + input[1] + input[2] + input[0];
+        },
+        22: (input) => {
+            return "" + input[3] + input[2] + input[0] + input[1];
+        },
+        23: (input) => {
+            return "" + input[3] + input[2] + input[1] + input[0];
+        },
     }
 }
 
